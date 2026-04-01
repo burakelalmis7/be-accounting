@@ -143,9 +143,10 @@ function openModal(titleText, bodyHTML, footerHTML='', size='default') {
 function closeModal() { document.getElementById('modal-container').innerHTML = ''; }
 
 function confirm(msg, onYes) {
+  window.__confirmAction = typeof onYes === 'function' ? onYes : null;
   openModal('Bestätigen', `<p style="color:var(--text)">${esc(msg)}</p>`,
-    `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Abbrechen</button>
-     <button class="btn btn-danger btn-sm" onclick="closeModal();(${onYes.toString()})()">Bestätigen</button>`);
+    `<button class="btn btn-ghost btn-sm" onclick="window.__confirmAction=null;closeModal()">Abbrechen</button>
+     <button class="btn btn-danger btn-sm" onclick="const action=window.__confirmAction;window.__confirmAction=null;closeModal();if(action)action()">Bestätigen</button>`);
 }
 
 function vatTreatmentOptions(dir='both') {
