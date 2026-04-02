@@ -62,6 +62,7 @@ Pages.dashboard = function() {
         <div style="margin-top:10px">
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Einnahmen</span><span class="mono">${fmtMoney(tax.revenue)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Abzugsfähige Ausgaben</span><span class="mono">${fmtMoney(tax.expenses)}</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Nicht abzugsfähige Ausgaben</span><span class="mono">${fmtMoney(tax.nonDeductibleExpenses)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Bemessungsgrundlage</span><span class="mono">${fmtMoney(tax.taxBase)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Steuersatz</span><span class="mono">${fmtPct(tax.rate)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Berechnete Steuer</span><span class="mono">${fmtMoney(tax.citEstimated)}</span></div>
@@ -77,6 +78,7 @@ Pages.dashboard = function() {
 function txFormHTML(t={}, type='income') {
   const dir = t.type||type;
   const attachments = Array.isArray(t.attachments) ? t.attachments : [];
+  const forcedNonDeductible = Tax.isManagingDirectorLoan({ ...t, type: dir });
   return `
     <div class="form-row form-row-3">
       <div class="form-group"><label>Datum *</label><input type="date" id="f-date" value="${t.date||dateStr()}" required></div>
@@ -122,8 +124,9 @@ function txFormHTML(t={}, type='income') {
           <option value="internal" ${t.fttType==='internal'?'selected':''}>Interne Überweisung</option>
         </select>
       </div>
-      <div class="form-group"><label><input type="checkbox" id="f-deduct" ${t.deductible!==false?'checked':''}> Steuerlich abzugsfähig</label></div>
+      <div class="form-group"><label><input type="checkbox" id="f-deduct" ${t.deductible!==false && !forcedNonDeductible?'checked':''} ${forcedNonDeductible?'disabled':''}> Steuerlich abzugsfähig</label></div>
     </div>
+    ${forcedNonDeductible ? '<div class="tax-notice">Darlehen an Geschäftsführer werden für die Körperschaftsteuer automatisch als nicht abzugsfähig behandelt.</div>' : ''}
     <div class="form-group"><label>Anhänge (PDF/JPG/PNG)</label><input type="file" id="f-attachments" accept="application/pdf,image/jpeg,image/png" multiple></div>
     <div class="tax-notice">Anhänge werden lokal im Browser gespeichert und beim JSON-Export mitgenommen. Wegen der Größe bitte Belege komprimiert halten.</div>
     <div id="f-attachment-list">${attachments.length ? attachments.map((att, idx) => `<div style="display:flex;align-items:center;gap:6px;margin-top:6px"><span class="badge badge-gray">${getAttachmentIcon(att)}</span><a href="#" onclick="openAttachmentByData(event, '${escAttr(att.dataUrl || '')}', '${escAttr(att.name || 'Datei')}')" style="color:var(--text2);text-decoration:none">${esc(att.name || `Anhang ${idx+1}`)}</a><button class="btn btn-ghost btn-icon btn-sm" onclick="removeTxAttachment(${idx})">✕</button></div>`).join('') : '<span class="muted">Keine Anhänge</span>'}</div>
@@ -137,6 +140,7 @@ window.txFormTypeChange = function() {
   const vatEl = document.getElementById('f-vattr');
   if (catEl) catEl.innerHTML = categoryOptions(type);
   if (vatEl) vatEl.innerHTML = vatTreatmentOptions(type==='income'?'income':'expense');
+  syncDeductibleLock();
 };
 window.txFormCalcVat = function() {
   const net = parseFloat(document.getElementById('f-net')?.value)||0;
@@ -144,6 +148,18 @@ window.txFormCalcVat = function() {
   const vat = Math.round(net*rate*100)/100;
   const vatEl = document.getElementById('f-vat');
   if (vatEl) vatEl.value = vat.toFixed(2);
+};
+
+window.syncDeductibleLock = function() {
+  const type = document.getElementById('f-type')?.value;
+  const category = document.getElementById('f-category')?.value || '';
+  const description = document.getElementById('f-desc')?.value || '';
+  const notes = document.getElementById('f-note')?.value || '';
+  const deductEl = document.getElementById('f-deduct');
+  if (!deductEl) return;
+  const forced = Tax.isManagingDirectorLoan({ type, category, description, notes });
+  deductEl.disabled = forced;
+  if (forced) deductEl.checked = false;
 };
 
 function renderTxAttachmentEditor() {
@@ -228,6 +244,13 @@ function openTxModal(existingId) {
       const cpEl=document.getElementById('f-cp'); if(cpEl)cpEl.value=existing.counterpartyId||'';
     }
     bindTxAttachmentEvents(existing);
+    const categoryEl = document.getElementById('f-category');
+    const descEl = document.getElementById('f-desc');
+    const noteEl = document.getElementById('f-note');
+    if (categoryEl) categoryEl.onchange = () => syncDeductibleLock();
+    if (descEl) descEl.oninput = () => syncDeductibleLock();
+    if (noteEl) noteEl.oninput = () => syncDeductibleLock();
+    syncDeductibleLock();
   },30);
 }
 window.openTxModal = openTxModal;
@@ -259,6 +282,7 @@ window.removeTxAttachment = function(idx) {
 
 window.saveTx = async function(existingId) {
   const t = await readTxForm(existingId);
+  if (Tax.isManagingDirectorLoan(t)) t.deductible = false;
   const errors = Validate.transaction(t);
   if (errors.length) { showToast(errors[0], 'error'); return; }
   State.set(s => {
@@ -756,6 +780,7 @@ Pages.taxes = function() {
         <div style="margin-top:8px">
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Steuerpflichtige Einnahmen</span><span class="mono">${fmtMoney(cit.revenue)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Abzugsfähige Ausgaben</span><span class="mono">${fmtMoney(cit.expenses)}</span></div>
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Nicht abzugsfähige Ausgaben</span><span class="mono">${fmtMoney(cit.nonDeductibleExpenses)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Gewinn</span><span class="mono">${fmtMoney(cit.profit)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Bemessungsgrundlage</span><span class="mono">${fmtMoney(cit.taxBase)}</span></div>
           <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)"><span class="muted">Steuersatz</span><span class="mono">${fmtPct(cit.rate)}</span></div>

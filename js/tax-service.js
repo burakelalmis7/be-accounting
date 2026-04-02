@@ -2,6 +2,33 @@
 // MODUL: STEUERLOGIK
 // ============================================================
 const Tax = (() => {
+  function getCitRulesForYear(year, stateSettings) {
+    return stateSettings?.citRulesByYear?.[year]
+      || CIT_RULES_BY_YEAR[year]
+      || stateSettings?.citRules
+      || DEFAULT_CIT_RULES;
+  }
+
+  function getMinTaxRulesForYear(year, stateSettings) {
+    return stateSettings?.minTaxRulesByYear?.[year]
+      || MIN_TAX_RULES_BY_YEAR[year]
+      || stateSettings?.minTaxRules
+      || DEFAULT_MIN_TAX;
+  }
+
+  function isManagingDirectorLoan(t) {
+    if (!t || t.type !== 'expense') return false;
+    const category = String(t.category || '').toLowerCase();
+    const text = `${t.description || ''} ${t.notes || ''}`.toLowerCase();
+    if (category.includes('darlehen an geschäftsführer') || category.includes('darlehen an geschaeftsfuehrer')) return true;
+    return (text.includes('darlehen') || text.includes('loan'))
+      && (text.includes('geschäftsführer') || text.includes('geschaeftsfuehrer') || text.includes('director'));
+  }
+
+  function isDeductibleExpense(t) {
+    return t?.type === 'expense' && t.deductible !== false && !isManagingDirectorLoan(t);
+  }
+
   function vatSummary(transactions, year, quarter) {
     let outputVat = 0, inputVat = 0, rcBase = 0;
     const filtered = transactions.filter(t => {
@@ -23,18 +50,19 @@ const Tax = (() => {
     const state = State.get();
     const txYear = transactions.filter(t => t.date && t.date.startsWith(String(year)));
     const revenue = txYear.filter(t=>t.type==='income').reduce((s,t)=>s+(t.netAmount||0),0);
-    const expenses = txYear.filter(t=>t.type==='expense'&&t.deductible!==false).reduce((s,t)=>s+(t.grossAmount||0),0);
+    const expenses = txYear.filter(isDeductibleExpense).reduce((s,t)=>s+(t.grossAmount||0),0);
+    const nonDeductibleExpenses = txYear.filter(t => t.type === 'expense' && !isDeductibleExpense(t)).reduce((s,t)=>s+(t.grossAmount||0),0);
     const profit = revenue - expenses;
     const taxBase = Math.max(0, profit);
-    const rules = state.settings.citRules || DEFAULT_CIT_RULES;
+    const rules = getCitRulesForYear(year, state.settings);
     let rate = 0.21;
     for (const r of rules) { if (revenue <= r.revenueUpTo) { rate = r.rate; break; } }
     const citEstimated = taxBase * rate;
-    const minRules = state.settings.minTaxRules || DEFAULT_MIN_TAX;
-    let minTax = 340;
+    const minRules = getMinTaxRulesForYear(year, state.settings);
+    let minTax = 0;
     for (const r of minRules) { if (revenue <= r.revenueUpTo) { minTax = r.amount; break; } }
     const taxPayable = Math.max(citEstimated, minTax);
-    return { revenue, expenses, profit, taxBase, rate, citEstimated, minTax, taxPayable };
+    return { revenue, expenses, nonDeductibleExpenses, profit, taxBase, rate, citEstimated, minTax, taxPayable };
   }
 
   function classifyFttTransaction(t, rules) {
@@ -115,6 +143,6 @@ const Tax = (() => {
     return { annual: cost / years, monthly: cost / years / 12, totalYears: years };
   }
 
-  return { vatSummary, citEstimate, fttSummary, classifyFttTransaction, calcVatAmounts, assetDepreciation };
+  return { vatSummary, citEstimate, fttSummary, classifyFttTransaction, calcVatAmounts, assetDepreciation, isManagingDirectorLoan, isDeductibleExpense };
 })();
 
