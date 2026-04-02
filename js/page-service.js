@@ -358,20 +358,53 @@ Pages.income = function() {
 };
 
 // ── AUSGABEN ───────────────────────────────────────────────
-Pages.expenses = function() {
+Pages.expenses = function(opts={}) {
   const s = State.get(); const yr = s.settings.accountingYear;
-  const txns = s.transactions.filter(t=>t.type==='expense'&&t.date&&t.date.startsWith(String(yr)));
+  const search = opts.search || '';
+  const catF = opts.cat || '';
+  const deductF = opts.deduct || '';
+  const allTxns = s.transactions.filter(t=>t.type==='expense'&&t.date&&t.date.startsWith(String(yr)));
+  let txns = allTxns;
+  if (search) {
+    const q = search.toLowerCase();
+    txns = txns.filter(t =>
+      (t.description || '').toLowerCase().includes(q)
+      || (t.invoiceRef || '').toLowerCase().includes(q)
+      || (t.notes || '').toLowerCase().includes(q)
+      || (cpName(t.counterpartyId) || '').toLowerCase().includes(q)
+    );
+  }
+  if (catF) txns = txns.filter(t => t.category === catF);
+  if (deductF === 'deductible') txns = txns.filter(t => Tax.isDeductibleExpense(t));
+  if (deductF === 'non_deductible') txns = txns.filter(t => !Tax.isDeductibleExpense(t));
+  txns = txns.slice().sort((a,b)=>b.date.localeCompare(a.date));
+
   const total = txns.reduce((a,t)=>a+(t.grossAmount||0),0);
-  const nonDeduct = txns.filter(t=>t.deductible===false).reduce((a,t)=>a+(t.grossAmount||0),0);
+  const nonDeduct = txns.filter(t=>!Tax.isDeductibleExpense(t)).reduce((a,t)=>a+(t.grossAmount||0),0);
+  const totalAll = allTxns.reduce((a,t)=>a+(t.grossAmount||0),0);
+  const hasFilters = Boolean(search || catF || deductF);
   return `
     <div class="section-header">
-      <div><div class="section-title">Ausgaben</div><div class="section-sub">${yr} · ${txns.length} Buchungen</div></div>
+      <div><div class="section-title">Ausgaben</div><div class="section-sub">${yr} · ${txns.length} ${hasFilters ? `von ${allTxns.length} Buchungen` : 'Buchungen'}</div></div>
       <button class="btn btn-primary btn-sm" onclick="openTxModal(null,'expense')">+ Neue Ausgabe</button>
+    </div>
+    <div class="filters">
+      <input type="text" placeholder="🔍 Ausgaben suchen..." value="${esc(search)}" oninput="UI.render('expenses',{search:this.value,cat:'${escAttr(catF)}',deduct:'${escAttr(deductF)}'})">
+      <select onchange="UI.render('expenses',{search:'${escAttr(search)}',cat:this.value,deduct:'${escAttr(deductF)}'})">
+        <option value="">Alle Kategorien</option>
+        ${EXPENSE_CATEGORIES.map(c=>`<option value="${escAttr(c)}" ${catF===c?'selected':''}>${esc(c)}</option>`).join('')}
+      </select>
+      <select onchange="UI.render('expenses',{search:'${escAttr(search)}',cat:'${escAttr(catF)}',deduct:this.value})">
+        <option value="" ${!deductF?'selected':''}>Alle Ausgaben</option>
+        <option value="deductible" ${deductF==='deductible'?'selected':''}>Nur abzugsfähig</option>
+        <option value="non_deductible" ${deductF==='non_deductible'?'selected':''}>Nur nicht abzugsfähig</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" onclick="UI.render('expenses')">Filter zurücksetzen</button>
     </div>
     <div class="grid grid-3" style="margin-bottom:16px">
       <div class="card"><div class="card-title">Gesamtausgaben (brutto)</div><div class="card-value red">${fmtMoney(total)}</div></div>
       <div class="card"><div class="card-title">Nicht abzugsfähig</div><div class="card-value yellow">${fmtMoney(nonDeduct)}</div></div>
-      <div class="card"><div class="card-title">Buchungen</div><div class="card-value mono">${txns.length}</div></div>
+      <div class="card"><div class="card-title">Buchungen</div><div class="card-value mono">${txns.length}</div><div class="card-sub">${hasFilters ? `Gesamt ungefiltert ${fmtMoney(totalAll)}` : 'Aktuelle Ansicht'}</div></div>
     </div>
     ${txTable(txns, 'expense')}`;
 };
