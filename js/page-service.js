@@ -79,7 +79,17 @@ function txFormHTML(t={}, type='income') {
   const dir = t.type||type;
   const attachments = Array.isArray(t.attachments) ? t.attachments : [];
   const forcedNonDeductible = Tax.isManagingDirectorLoan({ ...t, type: dir });
-  return `
+  const scanBlock = !t.id ? `
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Rechnung automatisch auslesen</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <button type="button" class="btn btn-ghost btn-sm" onclick="triggerInvoiceScan()">Datei scannen</button>
+        <input type="file" id="f-scan-file" accept="application/pdf,image/jpeg,image/png" style="display:none" onchange="handleInvoiceScanFile(this)">
+        <span class="muted" style="font-size:11px">PDF oder Bild hochladen — Datum, Betrag und Belegnr. werden automatisch erkannt</span>
+      </div>
+      <div id="f-scan-status"></div>
+    </div>` : '';
+  return scanBlock + `
     <div class="form-row form-row-3">
       <div class="form-group"><label>Datum *</label><input type="date" id="f-date" value="${t.date||dateStr()}" required></div>
       <div class="form-group"><label>Typ *</label>
@@ -228,12 +238,12 @@ async function readTxForm(existingId) {
   };
 }
 
-function openTxModal(existingId) {
+function openTxModal(existingId, defaultType='income') {
   const s = State.get();
   const existing = existingId ? s.transactions.find(t=>t.id===existingId) : null;
   window._editingTxAttachments = Array.isArray(existing?.attachments) ? [...existing.attachments] : [];
   const title = existing ? 'Buchung bearbeiten' : 'Neue Buchung';
-  openModal(title, txFormHTML(existing||{}, 'income'),
+  openModal(title, txFormHTML(existing||{}, existing ? existing.type : defaultType),
     `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Abbrechen</button>
      <button class="btn btn-primary btn-sm" onclick="saveTx(${existingId?`'${existingId}'`:'null'})">Speichern</button>`);
   setTimeout(()=>{
