@@ -46,20 +46,24 @@
 
   <div id="main">
     <div id="topbar">
-      <div>
-        <div class="topbar-title" id="topbar-title">Dashboard</div>
-        <div class="topbar-period" id="topbar-period"></div>
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        <button id="sidebar-toggle" aria-label="Menü öffnen">☰</button>
+        <div style="min-width:0">
+          <div class="topbar-title" id="topbar-title">Dashboard</div>
+          <div class="topbar-period" id="topbar-period"></div>
+        </div>
       </div>
       <div class="topbar-actions">
         <select id="year-switcher" onchange="UI.changeYear(this.value)" style="min-width:96px"></select>
-        <button class="btn btn-ghost btn-sm" onclick="UI.exportJSON()">⬇ JSON exportieren</button>
-        <button class="btn btn-ghost btn-sm" onclick="UI.importJSON()">⬆ JSON importieren</button>
+        <button class="btn btn-ghost btn-sm" onclick="UI.exportJSON()">⬇ <span class="btn-label">JSON exportieren</span></button>
+        <button class="btn btn-ghost btn-sm" onclick="UI.importJSON()">⬆ <span class="btn-label">JSON importieren</span></button>
       </div>
     </div>
     <div id="content"></div>
   </div>
 </div>
 
+<div id="sidebar-backdrop"></div>
 <div id="modal-container"></div>
 <div id="toast"></div>
 <div id="print-root" style="display:none"></div>

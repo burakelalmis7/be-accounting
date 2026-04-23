@@ -9,6 +9,24 @@ document.addEventListener('DOMContentLoaded', () => {
     el.addEventListener('click', ()=>UI.render(el.dataset.tab));
   });
 
+  // Mobile sidebar drawer
+  const sidebar = document.getElementById('sidebar');
+  const sidebarToggle = document.getElementById('sidebar-toggle');
+  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+  const openSidebar = () => {
+    sidebar.classList.add('sidebar-open');
+    sidebarBackdrop.classList.add('sidebar-open');
+  };
+  const closeSidebar = () => {
+    sidebar.classList.remove('sidebar-open');
+    sidebarBackdrop.classList.remove('sidebar-open');
+  };
+  sidebarToggle.addEventListener('click', openSidebar);
+  sidebarBackdrop.addEventListener('click', closeSidebar);
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.addEventListener('click', closeSidebar);
+  });
+
   const legacyYearSelect = document.getElementById('topbar-year-select');
   if (legacyYearSelect) {
     legacyYearSelect.addEventListener('change', e => {
