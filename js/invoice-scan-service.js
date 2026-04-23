@@ -141,25 +141,25 @@ window.InvoiceScan = (function () {
     }
 
     // 2. Belegnummer
-    const refPat = /(?:Rechnungs-?(?:nummer|nr\.?|no\.?)|Invoice\s*(?:No\.?|Nr\.?|Number|#)|Beleg-?(?:nr\.?|nummer|No\.?))[:\s#]*([A-Z0-9][A-Z0-9\-\.\/]{1,30})/i;
+    const refPat = /(?:Rechnungs-?(?:nummer|nr\.?|no\.?)|Rechnung\s+Nr\.?|Invoice\s*(?:No\.?|Nr\.?|Number|#)|Beleg-?(?:nr\.?|nummer|No\.?))[:\s#]*([A-Z0-9][A-Z0-9\-\.\/]{1,30})/i;
     const refM = text.match(refPat);
     if (refM) result.invoiceRef = refM[1].trim();
 
     // 3. Beträge – Brutto hat höchste Priorität da am eindeutigsten
     const AMT = '([0-9]{1,3}(?:[.\\s]?[0-9]{3})*(?:[,\\.][0-9]{1,2})?)';
 
-    // Brutto / Gesamt
+    // Brutto / Gesamt — inkl. "Gesamtzahlungsbetrag" (numiron.sk / SK-Format)
     const grossPat = new RegExp(
-      '(?:Gesamt(?:betrag|summe)?|Brutto(?:betrag)?|Rechnungsbetrag|Total(?:\\s*Amount)?|' +
+      '(?:Gesamt(?:zahlungs)?(?:betrag|summe)?|Brutto(?:betrag)?|Rechnungsbetrag|Total(?:\\s*Amount)?|' +
       'Zu(?:\\s+)zahlen(?:der)?(?:\\s+Betrag)?|Zahlbetrag|Endbetrag|Fälliger Betrag)' +
       '[:\\s]*' + AMT + '\\s*€?', 'i'
     );
     const grossM = text.match(grossPat);
     if (grossM) result.grossAmount = parseAmount(grossM[1]);
 
-    // Netto
+    // Netto — inkl. "MwSt.-Grundlage" (numiron.sk / SK-Format)
     const netPat = new RegExp(
-      '(?:Netto(?:betrag|summe|-Summe)?|Summe\\s*Netto|Net(?:\\s*Amount)?|Betrag\\s*netto)' +
+      '(?:Netto(?:betrag|summe|-Summe)?|Summe\\s*Netto|Net(?:\\s*Amount)?|Betrag\\s*netto|MwSt\\.?-?Grundlage(?:[^0-9]*\\d+\\s*%)?)' +
       '[:\\s]*' + AMT + '\\s*€?', 'i'
     );
     const netM = text.match(netPat);
@@ -170,12 +170,14 @@ window.InvoiceScan = (function () {
     const vatRateM = text.match(vatRatePat);
     if (vatRateM) result.vatRate = parseFloat(vatRateM[1].replace(',', '.')) / 100;
 
-    // MwSt-Betrag (nach dem Satz oder eigene Zeile)
+    // MwSt-Betrag — SK-Format "Ust 23% 68,43" zuerst prüfen, damit
+    // "MwSt.-Grundlage" (Netto-Zeile) nicht fälschlich als Betrag gilt
+    const vatAmtSKPat = new RegExp('\\bUst\\s+\\d+\\s*%[:\\s]*' + AMT + '\\s*€?', 'i');
     const vatAmtPat = new RegExp(
-      '(?:MwSt\.?|USt\.?|Mehrwertsteuer|VAT)' +
+      '(?:MwSt\\.?|Mehrwertsteuer|VAT)(?![-\\s]*Grundlage)' +
       '[^0-9%]*\\d+\\s*%[:\\s]*' + AMT + '\\s*€?', 'i'
     );
-    const vatAmtM = text.match(vatAmtPat);
+    const vatAmtM = text.match(vatAmtSKPat) || text.match(vatAmtPat);
     if (vatAmtM) result.vatAmount = parseAmount(vatAmtM[1]);
 
     // 4. Ableitungen wenn Felder fehlen
