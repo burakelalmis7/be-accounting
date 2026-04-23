@@ -663,6 +663,84 @@
     .grid-3 { grid-template-columns: 1fr 1fr; }
   }
 
+  /* ─── Mobile Sidebar Toggle ───────────────────────── */
+
+  #sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.55);
+    z-index: 99;
+  }
+  #sidebar-backdrop.sidebar-open { display: block; }
+
+  #sidebar-toggle {
+    display: none;
+    background: none;
+    border: 1px solid var(--border2);
+    border-radius: var(--radius);
+    color: var(--text2);
+    cursor: pointer;
+    padding: 5px 9px;
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  #sidebar-toggle:hover { background: var(--surface2); color: var(--text); }
+
+  /* ─── Tablet / Drawer (≤ 768px) ──────────────────── */
+
+  @media (max-width: 768px) {
+    #sidebar-toggle { display: flex; align-items: center; justify-content: center; }
+
+    #sidebar {
+      position: fixed;
+      left: 0; top: 0; bottom: 0;
+      z-index: 100;
+      transform: translateX(-100%);
+      transition: transform .25s ease;
+      width: 220px;
+      min-width: 220px;
+      box-shadow: 4px 0 24px rgba(0,0,0,.5);
+    }
+    #sidebar.sidebar-open { transform: translateX(0); }
+
+    #main { width: 100%; }
+
+    #topbar { padding: 8px 12px; }
+    .topbar-year-label { display: none; }
+    .topbar-year-select { width: 80px; min-width: 80px; }
+    .topbar-year-wrap { margin-right: 4px; }
+    .topbar-actions { gap: 4px; }
+
+    #content { padding: 12px; }
+
+    .form-row-3 { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ─── Phone (≤ 480px) ────────────────────────────── */
+
+  @media (max-width: 480px) {
+    .btn-label { display: none; }
+
+    #topbar { padding: 7px 10px; min-height: 44px; }
+    #content { padding: 10px; }
+
+    .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+    .form-row-2, .form-row-3 { grid-template-columns: 1fr; }
+
+    .section-header { flex-wrap: wrap; gap: 8px; }
+
+    .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+    .tab { white-space: nowrap; }
+
+    .modal-overlay { padding: 0; align-items: flex-end; }
+    .modal { max-width: 100%; border-radius: 10px 10px 0 0; max-height: 92vh; }
+
+    .card-value { font-size: 18px; }
+    .filters input, .filters select { min-width: 110px; }
+  }
+
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 99px; }
