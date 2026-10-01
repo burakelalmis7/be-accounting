@@ -1,4 +1,6 @@
-// Copy this file to supabase-config.local.js and enter only the project URL
-// and the *publishable/anon* key.  supabase-config.local.js is gitignored.
-// This placeholder intentionally keeps the application in setup mode.
-window.BE_ACCOUNTING_SUPABASE = window.BE_ACCOUNTING_SUPABASE || null;
+// Public browser configuration for GitHub Pages. Use only a publishable/anon key.
+// Local development may override this in the gitignored supabase-config.local.js.
+window.BE_ACCOUNTING_SUPABASE = {
+  "url": "https://tagvsuvjaznlbvpnbnvq.supabase.co",
+  "publishableKey": "sb_publishable_6k4Nn6eSIVxwtKAy2K4BMw_kS4N7Mgk"
+};
