@@ -83,8 +83,10 @@ function normalizeInvoice(raw, kind='issued', idx=0) {
   const taxNoteText = raw.taxNoteText || (invoiceType === 'reverse_charge' ? settings.standardReverseChargeNote : settings.standardVatNote);
   return {
     id: raw.id || uid(),
-    number: raw.number || raw.invoiceNumber || `${String(idx + 1).padStart(4, '0')}`,
-    invoiceNumber: raw.invoiceNumber || raw.number || `${String(idx + 1).padStart(4, '0')}`,
+    // Keep the cloud revision for optimistic writes after State.migrate().
+    version: raw.version ?? null,
+    number: raw.number || raw.invoiceNumber || (raw.deferNumber ? '' : `${String(idx + 1).padStart(4, '0')}`),
+    invoiceNumber: raw.invoiceNumber || raw.number || (raw.deferNumber ? '' : `${String(idx + 1).padStart(4, '0')}`),
     invoiceType,
     issueDate,
     dueDate,
@@ -116,6 +118,7 @@ function normalizeInvoice(raw, kind='issued', idx=0) {
       lockedPdfSnapshot: raw.documentMeta?.lockedPdfSnapshot || null,
     },
     linkedTransactionId: raw.linkedTransactionId || null,
+    deferNumber: !!raw.deferNumber,
     createdAt: raw.createdAt || now(),
     updatedAt: raw.updatedAt || now(),
   };
@@ -387,4 +390,3 @@ function printInvoice(id, type='issued', isPdf=true) {
 }
 window.openInvoicePreview = openInvoicePreview;
 window.printInvoice = printInvoice;
-

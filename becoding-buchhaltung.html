@@ -54,6 +54,7 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <span id="global-save-status" class="form-status" aria-live="polite"></span>
         <select id="year-switcher" onchange="UI.changeYear(this.value)" style="min-width:96px"></select>
         <button class="btn btn-ghost btn-sm" onclick="UI.exportJSON()">⬇ <span class="btn-label">JSON exportieren</span></button>
         <button class="btn btn-ghost btn-sm" onclick="UI.importJSON()">⬆ <span class="btn-label">JSON importieren</span></button>
@@ -64,20 +65,30 @@
 </div>
 
 <div id="sidebar-backdrop"></div>
+<div id="auth-overlay"><main class="auth-screen"><section class="auth-card"><h1>BE-Coding Buchhaltung</h1><p class="muted">Anmeldung wird geprüft …</p></section></main></div>
 <div id="modal-container"></div>
 <div id="toast"></div>
 <div id="print-root" style="display:none"></div>
 <input type="file" id="file-input" accept=".json" style="display:none">
 
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="js/supabase-config.js"></script>
+<script src="js/supabase-config.local.js"></script>
 <script src="js/config.js"></script>
 <script src="js/state.js"></script>
+<script src="js/supabase-client.js"></script>
+<script src="js/draft-service.js"></script>
+<script src="js/auth-service.js"></script>
+<script src="js/persistence-service.js"></script>
+<script src="js/attachment-service.js"></script>
+<script src="js/migration-service.js?v=20261001-import2"></script>
 <script src="js/ui-helper.js"></script>
 <script src="js/tax-service.js"></script>
 <script src="js/validation-service.js"></script>
-<script src="js/invoice-service.js"></script>
+<script src="js/invoice-service.js?v=20261001-version"></script>
 <script src="js/invoice-scan-service.js"></script>
-<script src="js/page-service.js"></script>
-<script src="js/init.js"></script>
+<script src="js/page-service.js?v=20261001-version"></script>
+<script src="js/app-bootstrap.js"></script>
+<script src="js/init.js?v=20261001-import"></script>
 </body>
 </html>
-

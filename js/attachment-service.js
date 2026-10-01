@@ -1,0 +1,7 @@
+const Attachments = (() => {
+  const MAX_SIZE = 15 * 1024 * 1024; const TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png']);
+  function check(file) { if (!TYPES.has(file.type)) throw new Error('Erlaubt sind nur PDF, JPG und PNG.'); if (file.size > MAX_SIZE) throw new Error('Ein Beleg darf höchstens 15 MB groß sein.'); }
+  async function upload(file, recordId, draftId=null) { check(file); const client = SupabaseClient.get(); const companyId = Persistence.currentCompanyId(); if (!client || !companyId) throw new Error('Belegupload benötigt eine aktive Verbindung.'); const id = crypto.randomUUID(); const extension = (file.name.split('.').pop() || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 10); const path = `${companyId}/${recordId || `draft-${draftId}`}/${id}.${extension}`; const { error: uploadError } = await client.storage.from('receipts').upload(path, file, { contentType: file.type, upsert: false }); if (uploadError) throw uploadError; const { data, error } = await client.from('attachments').insert({ id, company_id: companyId, record_id: recordId || null, draft_id: draftId || null, storage_path: path, original_name: file.name, mime_type: file.type, byte_size: file.size }).select().single(); if (error) { await client.storage.from('receipts').remove([path]); throw error; } return data; }
+  async function signedUrl(path) { const { data, error } = await SupabaseClient.get().storage.from('receipts').createSignedUrl(path, 60); if (error) throw error; return data.signedUrl; }
+  return { upload, signedUrl };
+})();

@@ -1,1 +1,5 @@
-/.idea
+js/supabase-config.local.js
+.idea/
+.env
+.env.*
+!*.example

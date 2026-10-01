@@ -19,7 +19,7 @@ const Validate = (() => {
 
   function invoice(inv) {
     const errors = [];
-    if (!inv.number || !String(inv.number).trim()) errors.push('Rechnungsnummer ist erforderlich');
+    if ((!inv.number || !String(inv.number).trim()) && !inv.deferNumber) errors.push('Rechnungsnummer ist erforderlich');
     if (!inv.counterpartyId) errors.push('Geschäftspartner ist erforderlich');
     if (!inv.recipientSnapshot?.customerName) errors.push('Empfängername fehlt');
     if (!inv.recipientSnapshot?.addressLine1) errors.push('Empfängeradresse fehlt');
@@ -48,4 +48,3 @@ const Validate = (() => {
 
   return { transaction, invoice, asset };
 })();
-

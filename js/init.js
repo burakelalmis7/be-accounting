@@ -1,9 +1,8 @@
 ﻿// ============================================================
 // INITIALISIERUNG
 // ============================================================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   State.load();
-  syncIssuedInvoicesToIncomeTransactions();
 
   document.querySelectorAll('.nav-item').forEach(el=>{
     el.addEventListener('click', ()=>UI.render(el.dataset.tab));
@@ -40,16 +39,32 @@ document.addEventListener('DOMContentLoaded', () => {
     const reader = new FileReader();
     reader.onload = ev => {
       try {
-        State.importJSON(ev.target.result);
-        syncIssuedInvoicesToIncomeTransactions();
-        showToast('Zustand importiert','success');
-        UI.render(UI.currentTab);
+        const info = Migration.stage(ev.target.result);
+        if (Auth.user()) {
+          const totalInvoices = info.counts.invoicesIssued + info.counts.invoicesReceived;
+          openModal('Altdaten sicher übernehmen', `<p>Gefunden: <strong>${info.counts.transactions} Buchungen</strong>, ${totalInvoices} Rechnungen, ${info.counts.counterparties} Geschäftspartner und ${info.attachmentCount} Belege.</p><p class="tax-notice">Die Datei wird nur übernommen, wenn der Cloud-Bestand leer ist. Bestehende Datensätze werden nicht überschrieben. Nach dem Import werden Anzahl und Buchungsbeträge geprüft.</p>`, `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Abbrechen</button><button class="btn btn-primary btn-sm" onclick="startLegacyImport()">Jetzt übernehmen</button>`);
+        } else {
+          State.importJSON(ev.target.result);
+          showToast('Legacy-Daten lokal geprüft und geladen', 'success');
+          UI.render(UI.currentTab);
+        }
       } catch(err) { showToast('Importfehler: '+err.message,'error'); }
     };
     reader.readAsText(file);
     e.target.value='';
   });
 
-  UI.render('dashboard');
-});
+  window.startLegacyImport = async function() {
+    const status = message => openModal('Altdaten übernehmen', `<p>${esc(message)}</p><p class="muted">Bitte die Seite bis zum Abschluss geöffnet lassen.</p>`);
+    status('Import wird vorbereitet …');
+    try {
+      const result = await Migration.importStaged(status);
+      await AppBootstrap.startSignedIn();
+      openModal('Import abgeschlossen', `<p>${result.counts.transactions} Buchungen und ${result.counts.invoicesIssued + result.counts.invoicesReceived} Rechnungen wurden übernommen und geprüft.</p>`, `<button class="btn btn-primary btn-sm" onclick="closeModal()">Schließen</button>`);
+    } catch (error) {
+      openModal('Import angehalten', `<p class="form-status error">${esc(error.message || 'Unbekannter Fehler')}</p><p>Die Sicherungsdatei bleibt unverändert. Bitte keine andere Sicherung importieren, bevor der Fehler geprüft ist.</p>`, `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Schließen</button>`);
+    }
+  };
 
+  await AppBootstrap.init();
+});

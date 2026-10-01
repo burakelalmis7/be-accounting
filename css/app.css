@@ -233,6 +233,18 @@
     color: var(--text3);
     margin-left: 4px;
   }
+
+  #auth-overlay:empty { display: none; }
+  #auth-overlay { position: fixed; inset: 0; z-index: 3000; background: var(--bg); }
+  .auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+  .auth-card { width: min(100%, 430px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 28px; box-shadow: var(--shadow); }
+  .auth-card h1 { font-size: 22px; margin-bottom: 8px; }
+  .form-status { font-size: 11px; color: var(--text3); max-width: 220px; }
+  .form-status.dirty { color: var(--yellow); }
+  .form-status.saving { color: var(--blue); }
+  .form-status.local { color: var(--yellow); }
+  .form-status.cloud { color: var(--green); }
+  .form-status.error, .form-status.conflict { color: var(--red); }
   .invoice-line-grid {
     display: grid;
     grid-template-columns: 70px minmax(240px,1fr) 90px 90px 120px 120px 44px;
@@ -749,7 +761,7 @@
     position: fixed; bottom: 20px; right: 20px; z-index: 2000;
     display: flex; flex-direction: column; gap: 6px;
   }
-  .toast-msg {
+.toast-msg {
     background: var(--surface2); border: 1px solid var(--border2);
     border-radius: var(--radius); padding: 10px 14px;
     font-size: 12px; color: var(--text); min-width: 220px;
@@ -770,4 +782,3 @@
     color: var(--purple); border-radius: 3px; padding: 1px 5px;
     font-weight: 600; letter-spacing: .04em; margin-left: 6px;
   }
-

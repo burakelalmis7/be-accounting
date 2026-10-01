@@ -1,7 +1,14 @@
 ﻿// ============================================================
 // MODUL: HILFSFUNKTIONEN
 // ============================================================
-function uid() { return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+function uid() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  // UUIDv4 shape is required by the central database; this fallback is only
+  // for older browsers without crypto.randomUUID.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16);
+  });
+}
 function now() { return new Date().toISOString(); }
 function dateStr(d) { return (d || new Date()).toISOString().slice(0,10); }
 function fmtDate(s) { if (!s) return '–'; return s.slice(0,10); }
@@ -77,10 +84,11 @@ function getAvailableYears() {
   });
   return [...years].filter(Boolean).sort((a,b)=>b-a);
 }
-function setAccountingYear(year) {
+async function setAccountingYear(year) {
   const y = parseInt(year, 10);
   if (!y) return;
   State.set(s => { s.settings.accountingYear = y; });
+  if (Auth?.user?.()) await Persistence.saveSettings(State.get());
 }
 function attachmentsHtml(list=[]) {
   if (!list.length) return '';

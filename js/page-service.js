@@ -143,6 +143,26 @@ function txFormHTML(t={}, type='income') {
     <div class="form-group"><label>Notiz</label><textarea id="f-note" rows="2">${esc(t.notes||'')}</textarea></div>`;
 }
 
+function txDraftSnapshot() {
+  return { fields: Object.fromEntries([...document.querySelectorAll('#modal-container input[id], #modal-container select[id], #modal-container textarea[id]')].filter(el => el.type !== 'file').map(el => [el.id, el.type === 'checkbox' ? el.checked : el.value])), attachments: window._editingTxAttachments || [] };
+}
+function applyTxDraftSnapshot(snapshot) {
+  Object.entries(snapshot?.fields || {}).forEach(([id, value]) => { const el=document.getElementById(id); if (el) { if (el.type === 'checkbox') el.checked=!!value; else el.value=value; } });
+  if (Array.isArray(snapshot?.attachments)) { window._editingTxAttachments = snapshot.attachments; renderTxAttachmentEditor(); }
+  txFormCalcVat(); syncDeductibleLock();
+}
+function bindDraftAutoSave(kind, recordId, version, statusId, snapshot, apply) {
+  let active = true; let dirty = false; let lastSave = 0;
+  const write = () => { if (!active || !dirty) return; dirty=false; lastSave=Date.now(); Drafts.schedule(kind, recordId, snapshot, version, statusId); };
+  document.querySelectorAll('#modal-container input, #modal-container select, #modal-container textarea').forEach(el => {
+    if (el.type !== 'file') el.addEventListener('input', () => { dirty=true; Drafts.setStatus(statusId, 'dirty', 'Ungespeicherte Änderungen'); Drafts.schedule(kind, recordId, snapshot, version, statusId); });
+    el.addEventListener('change', () => { dirty=true; Drafts.schedule(kind, recordId, snapshot, version, statusId); });
+  });
+  Drafts.get(kind, recordId).then(draft => { if (active && draft?.content && confirm('Ein lokaler Entwurf wurde gefunden. Fortsetzen?')) { apply(draft.content); Drafts.setStatus(statusId, 'local', `Entwurf vom ${new Date(draft.updatedAt).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})} wiederhergestellt`); } });
+  const maxInterval = setInterval(() => { if (active && dirty && Date.now() - lastSave >= 10000) write(); }, 1000);
+  return () => { active=false; clearInterval(maxInterval); Drafts.cancel(kind, recordId); };
+}
+
 
 window.txFormTypeChange = function() {
   const type = document.getElementById('f-type')?.value;
@@ -243,7 +263,7 @@ function openTxModal(existingId, defaultType='income') {
   const existing = existingId ? s.transactions.find(t=>t.id===existingId) : null;
   window._editingTxAttachments = Array.isArray(existing?.attachments) ? [...existing.attachments] : [];
   const title = existing ? 'Buchung bearbeiten' : 'Neue Buchung';
-  openModal(title, txFormHTML(existing||{}, existing ? existing.type : defaultType),
+  openModal(title, `<div id="tx-save-status" class="form-status" aria-live="polite">Ungespeicherte Änderungen</div>${txFormHTML(existing||{}, existing ? existing.type : defaultType)}`,
     `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Abbrechen</button>
      <button class="btn btn-primary btn-sm" onclick="saveTx(${existingId?`'${existingId}'`:'null'})">Speichern</button>`);
   setTimeout(()=>{
@@ -261,6 +281,7 @@ function openTxModal(existingId, defaultType='income') {
     if (descEl) descEl.oninput = () => syncDeductibleLock();
     if (noteEl) noteEl.oninput = () => syncDeductibleLock();
     syncDeductibleLock();
+    bindDraftAutoSave('transaction', existing?.id || 'new', existing?.version, 'tx-save-status', txDraftSnapshot, applyTxDraftSnapshot);
   },30);
 }
 window.openTxModal = openTxModal;
@@ -291,26 +312,42 @@ window.removeTxAttachment = function(idx) {
 };
 
 window.saveTx = async function(existingId) {
+  const button = document.querySelector('.modal-footer .btn-primary');
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
   const t = await readTxForm(existingId);
   if (Tax.isManagingDirectorLoan(t)) t.deductible = false;
   const errors = Validate.transaction(t);
-  if (errors.length) { showToast(errors[0], 'error'); return; }
-  State.set(s => {
-    if (existingId) {
-      const i = s.transactions.findIndex(x=>x.id===existingId);
-      if (i>=0) { t.createdAt = s.transactions[i].createdAt; s.transactions[i]=t; }
-    } else {
-      s.transactions.push(t);
+  if (errors.length) { showToast(errors[0], 'error'); if (button) button.disabled = false; return; }
+  Drafts.setStatus('tx-save-status', 'saving', 'Speichert …');
+  try {
+    // Data URLs are not sent to the database. They remain in the local draft
+    // until their binary upload has succeeded.
+    const attachmentDrafts = t.attachments || []; t.attachments = attachmentDrafts.filter(a => a.storagePath).map(a => ({ ...a, dataUrl: undefined }));
+    let saved = await Persistence.saveEntity('transactions', t);
+    const uploaded = [];
+    for (const attachment of attachmentDrafts) {
+      if (attachment.storagePath) { uploaded.push({ ...attachment, dataUrl: undefined }); continue; }
+      if (!attachment.dataUrl) continue;
+      const blob = await (await fetch(attachment.dataUrl)).blob();
+      const file = new File([blob], attachment.name, { type: attachment.mimeType });
+      const record = await Attachments.upload(file, saved.id);
+      uploaded.push({ id: record.id, name: record.original_name, mimeType: record.mime_type, size: record.byte_size, storagePath: record.storage_path });
     }
-  });
-  closeModal(); window._editingTxAttachments = []; showToast('Buchung gespeichert', 'success');
-  UI.render(UI.currentTab);
+    if (uploaded.length !== saved.attachments?.length) saved = await Persistence.saveEntity('transactions', { ...saved, attachments: uploaded });
+    State.set(s => { const i=s.transactions.findIndex(x => x.id===saved.id); if (i >= 0) s.transactions[i]=saved; else s.transactions.push(saved); });
+    Drafts.cancel('transaction', existingId || 'new');
+    await Drafts.remove('transaction', existingId || 'new');
+    closeModal(); window._editingTxAttachments = []; showToast('Buchung zentral gespeichert', 'success'); UI.render(UI.currentTab);
+  } catch (error) {
+    Drafts.setStatus('tx-save-status', error.code === 'VERSION_CONFLICT' ? 'conflict' : 'error', error.code === 'VERSION_CONFLICT' ? 'Neuere Version vorhanden – Eingaben wurden lokal behalten.' : `Speichern fehlgeschlagen: ${error.message}`);
+    if (button) button.disabled = false;
+  }
 };
 
 window.deleteTx = function(id) {
-  confirm('Diese Buchung wirklich löschen?', ()=>{
-    State.set(s=>{ s.transactions = s.transactions.filter(t=>t.id!==id); });
-    showToast('Buchung gelöscht', 'warn'); UI.render(UI.currentTab);
+  confirm('Diese Buchung wirklich löschen?', async ()=>{
+    try { const tx=State.get().transactions.find(t=>t.id===id); await Persistence.deleteEntity('transactions',tx); State.set(s=>{ s.transactions = s.transactions.filter(t=>t.id!==id); }); showToast('Buchung gelöscht', 'warn'); UI.render(UI.currentTab); } catch(error) { showToast(`Löschen fehlgeschlagen: ${error.message}`, 'error'); }
   });
 };
 
@@ -533,25 +570,48 @@ function renderLineItemsEditor(lines) {
   return `<div class="invoice-line-grid invoice-line-head"><div>Pos.</div><div>Beschreibung</div><div>Menge</div><div>Einheit</div><div>Preis</div><div>USt.-Satz</div><div></div></div>${normalized.map((line, idx) => `<div class="invoice-line-grid" data-line-row="${idx}"><div><input type="number" data-line-field="positionNumber" value="${esc(line.positionNumber || idx+1)}"></div><div><textarea data-line-field="description" style="min-height:42px">${esc(line.description || '')}</textarea></div><div><input type="number" data-line-field="quantity" step="0.01" min="0.01" value="${esc(line.quantity || 1)}"></div><div><input type="text" data-line-field="unit" value="${esc(line.unit || 'h')}"></div><div><input type="number" data-line-field="unitPrice" step="0.01" min="0" value="${esc(line.unitPrice || 0)}"></div><div><select data-line-field="vatRate"><option value="0" ${(line.vatRate||0)===0?'selected':''}>0%</option>${(State.get().settings.vatRates||DEFAULT_VAT_RATES).map(v=>`<option value="${v.rate}" ${Number(line.vatRate)===Number(v.rate)?'selected':''}>${v.label}</option>`).join('')}</select></div><div><button class="btn btn-ghost btn-icon btn-sm" onclick="removeInvoiceLine(${idx})">✕</button></div></div>`).join('')}`;
 }
 function openInvoiceModal(id, type) {
-  const s = State.get(); const arr = type==='issued' ? s.invoicesIssued : s.invoicesReceived; const existing = id ? arr.find(i=>i.id===id) : null; const cfg = s.settings.invoice || defaultInvoiceSettings(); const cpType = type==='issued' ? 'customer' : 'supplier'; const invoiceNumber = existing?.number || (type==='issued' ? buildInvoiceNumber() : `EING-${String((s.invoicesReceived||[]).length+1).padStart(4,'0')}`); const issueDate = existing?.issueDate || dateStr(); const vatTreatment = existing?.vatTreatment || (type==='issued' ? 'eu_b2b_rc_income' : 'domestic_taxable_expense');
-  const body = `<div class="form-row form-row-3"><div class="form-group"><label>Rechnungsnummer *</label><input type="text" id="if-num" value="${esc(invoiceNumber)}"></div><div class="form-group"><label>Geschäftspartner *</label><select id="if-cp" onchange="prefillInvoiceCounterparty()">${counterpartyOptions(cpType)}</select></div><div class="form-group"><label>Status</label><select id="if-status"><option value="draft" ${existing?.status==='draft'?'selected':''}>Entwurf</option><option value="unpaid" ${!existing || existing?.status==='unpaid'?'selected':''}>Offen</option><option value="paid" ${existing?.status==='paid'?'selected':''}>Bezahlt</option><option value="partial" ${existing?.status==='partial'?'selected':''}>Teilbezahlt</option><option value="cancelled" ${existing?.status==='cancelled'?'selected':''}>Storniert</option></select></div></div><div class="form-row form-row-3"><div class="form-group"><label>Ausstellungsdatum *</label><input type="date" id="if-issue" value="${issueDate}"></div><div class="form-group"><label>Fälligkeitsdatum *</label><input type="date" id="if-due" value="${existing?.dueDate || addDays(issueDate, cfg.dueDays || 15)}"></div><div class="form-group"><label>Ansprechpartner</label><input type="text" id="if-contact" value="${esc(existing?.contactPerson || '')}"></div></div><div class="form-row form-row-2"><div class="form-group"><label>Leistungszeitraum von</label><input type="date" id="if-spf" value="${existing?.servicePeriodFrom || issueDate}"></div><div class="form-group"><label>Leistungszeitraum bis</label><input type="date" id="if-spt" value="${existing?.servicePeriodTo || issueDate}"></div></div><div class="form-row form-row-2"><div class="form-group"><label>Steuerliche Einordnung</label><select id="if-vt">${vatTreatmentOptions(type==='issued' ? 'income' : 'expense')}</select></div><div class="form-group"><label>Währung</label><input type="text" id="if-currency" value="${esc(existing?.currency || s.settings.currency || 'EUR')}"></div></div><div class="form-group"><label>Einleitungstext</label><textarea id="if-intro">${esc(existing?.introText || cfg.standardIntroText || '')}</textarea></div><div class="form-group"><label>Zahlungsbedingungen</label><textarea id="if-payterms">${esc(existing?.paymentTermsText || cfg.standardPaymentTerms || '')}</textarea></div><div class="form-group"><label>Steuerhinweis</label><textarea id="if-taxnote">${esc(existing?.taxNoteText || (vatTreatment==='eu_b2b_rc_income' ? cfg.standardReverseChargeNote : cfg.standardVatNote || ''))}</textarea></div><div class="form-group"><label>Grußformel</label><textarea id="if-closing">${esc(existing?.closingText || cfg.standardClosingText || '')}</textarea></div><hr class="sep"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div class="card-title" style="margin-bottom:0">Positionen</div><button class="btn btn-ghost btn-sm" onclick="addInvoiceLine()">+ Position</button></div><div id="invoice-lines-editor">${renderLineItemsEditor(existing?.lineItems)}</div><div class="info-bar" id="invoice-totals-preview" style="margin-top:14px"></div><div class="form-group"><label>Interne Notiz</label><textarea id="if-note">${esc(existing?.internalNote || '')}</textarea></div>`;
+  const s = State.get(); const arr = type==='issued' ? s.invoicesIssued : s.invoicesReceived; const existing = id ? arr.find(i=>i.id===id) : null; const cfg = s.settings.invoice || defaultInvoiceSettings(); const cpType = type==='issued' ? 'customer' : 'supplier'; const invoiceNumber = existing?.number || (type==='issued' ? '' : `EING-${String((s.invoicesReceived||[]).length+1).padStart(4,'0')}`); const issueDate = existing?.issueDate || dateStr(); const vatTreatment = existing?.vatTreatment || (type==='issued' ? 'eu_b2b_rc_income' : 'domestic_taxable_expense');
+  const body = `<div id="invoice-save-status" class="form-status" aria-live="polite">Ungespeicherte Änderungen</div><div class="form-row form-row-3"><div class="form-group"><label>Rechnungsnummer ${type==='issued'&&!existing?'(wird zentral vergeben)':'*'}</label><input type="text" id="if-num" value="${esc(invoiceNumber)}" ${type==='issued'&&!existing?'readonly placeholder="Wird beim finalen Speichern vergeben"':''}></div><div class="form-group"><label>Geschäftspartner *</label><select id="if-cp" onchange="prefillInvoiceCounterparty()">${counterpartyOptions(cpType)}</select></div><div class="form-group"><label>Status</label><select id="if-status"><option value="draft" ${existing?.status==='draft'?'selected':''}>Entwurf</option><option value="unpaid" ${!existing || existing?.status==='unpaid'?'selected':''}>Offen</option><option value="paid" ${existing?.status==='paid'?'selected':''}>Bezahlt</option><option value="partial" ${existing?.status==='partial'?'selected':''}>Teilbezahlt</option><option value="cancelled" ${existing?.status==='cancelled'?'selected':''}>Storniert</option></select></div></div><div class="form-row form-row-3"><div class="form-group"><label>Ausstellungsdatum *</label><input type="date" id="if-issue" value="${issueDate}"></div><div class="form-group"><label>Fälligkeitsdatum *</label><input type="date" id="if-due" value="${existing?.dueDate || addDays(issueDate, cfg.dueDays || 15)}"></div><div class="form-group"><label>Ansprechpartner</label><input type="text" id="if-contact" value="${esc(existing?.contactPerson || '')}"></div></div><div class="form-row form-row-2"><div class="form-group"><label>Leistungszeitraum von</label><input type="date" id="if-spf" value="${existing?.servicePeriodFrom || issueDate}"></div><div class="form-group"><label>Leistungszeitraum bis</label><input type="date" id="if-spt" value="${existing?.servicePeriodTo || issueDate}"></div></div><div class="form-row form-row-2"><div class="form-group"><label>Steuerliche Einordnung</label><select id="if-vt">${vatTreatmentOptions(type==='issued' ? 'income' : 'expense')}</select></div><div class="form-group"><label>Währung</label><input type="text" id="if-currency" value="${esc(existing?.currency || s.settings.currency || 'EUR')}"></div></div><div class="form-group"><label>Einleitungstext</label><textarea id="if-intro">${esc(existing?.introText || cfg.standardIntroText || '')}</textarea></div><div class="form-group"><label>Zahlungsbedingungen</label><textarea id="if-payterms">${esc(existing?.paymentTermsText || cfg.standardPaymentTerms || '')}</textarea></div><div class="form-group"><label>Steuerhinweis</label><textarea id="if-taxnote">${esc(existing?.taxNoteText || (vatTreatment==='eu_b2b_rc_income' ? cfg.standardReverseChargeNote : cfg.standardVatNote || ''))}</textarea></div><div class="form-group"><label>Grußformel</label><textarea id="if-closing">${esc(existing?.closingText || cfg.standardClosingText || '')}</textarea></div><hr class="sep"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div class="card-title" style="margin-bottom:0">Positionen</div><button class="btn btn-ghost btn-sm" onclick="addInvoiceLine()">+ Position</button></div><div id="invoice-lines-editor">${renderLineItemsEditor(existing?.lineItems)}</div><div class="info-bar" id="invoice-totals-preview" style="margin-top:14px"></div><div class="form-group"><label>Interne Notiz</label><textarea id="if-note">${esc(existing?.internalNote || '')}</textarea></div>`;
   openModal(existing?'Rechnung bearbeiten':'Neue Rechnung', body, `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Abbrechen</button>${type==='issued' ? `<button class="btn btn-ghost btn-sm" onclick="previewInvoiceDraft(${id?`'${id}'`:'null'},'${type}')">Vorschau</button>` : ''}<button class="btn btn-primary btn-sm" onclick="saveInvoice(${id?`'${id}'`:'null'},'${type}')">Speichern</button>`, 'wide');
-  setTimeout(()=>{ const cpEl=document.getElementById('if-cp'); if(cpEl) cpEl.value = existing?.counterpartyId || ''; document.getElementById('if-vt').value = vatTreatment; bindInvoiceEditorEvents(); updateInvoiceTotalsPreview(); }, 20);
+  setTimeout(()=>{ const cpEl=document.getElementById('if-cp'); if(cpEl) cpEl.value = existing?.counterpartyId || ''; document.getElementById('if-vt').value = vatTreatment; bindInvoiceEditorEvents(); updateInvoiceTotalsPreview(); bindDraftAutoSave(`invoice-${type}`, existing?.id || 'new', existing?.version, 'invoice-save-status', () => draftInvoiceFromForm(existing?.id, type), applyInvoiceDraft); }, 20);
 }
 window.openInvoiceModal = openInvoiceModal;
 function bindInvoiceEditorEvents() { document.querySelectorAll('#invoice-lines-editor input, #invoice-lines-editor select, #invoice-lines-editor textarea, #if-vt').forEach(el => { el.oninput = () => { syncTaxNoteSuggestion(); updateInvoiceTotalsPreview(); }; el.onchange = () => { syncTaxNoteSuggestion(); updateInvoiceTotalsPreview(); }; }); }
 function prefillInvoiceCounterparty() { const cp = getCounterpartyById(document.getElementById('if-cp')?.value || ''); if (!cp) return; const contact = document.getElementById('if-contact'); if (contact && !contact.value) contact.value = cp.contactPerson || ''; }
 window.prefillInvoiceCounterparty = prefillInvoiceCounterparty;
 function collectInvoiceLines() { return [...document.querySelectorAll('#invoice-lines-editor [data-line-row]')].map((row, idx) => { const get = name => row.querySelector(`[data-line-field="${name}"]`)?.value; return { id: row.dataset.lineId || uid(), positionNumber: parseInt(get('positionNumber') || idx + 1, 10), description: get('description') || '', quantity: parseFloat(get('quantity') || 0), unit: get('unit') || 'h', unitPrice: parseFloat(get('unitPrice') || 0), vatRate: parseFloat(get('vatRate') || 0), }; }).filter(line => line.description || line.quantity || line.unitPrice); }
-function draftInvoiceFromForm(id, type) { const s = State.get(); const cp = getCounterpartyById(document.getElementById('if-cp').value || ''); return normalizeInvoice({ id: id || uid(), number: document.getElementById('if-num').value, invoiceNumber: document.getElementById('if-num').value, counterpartyId: document.getElementById('if-cp').value, issueDate: document.getElementById('if-issue').value, dueDate: document.getElementById('if-due').value, servicePeriodFrom: document.getElementById('if-spf').value, servicePeriodTo: document.getElementById('if-spt').value, contactPerson: document.getElementById('if-contact').value, status: document.getElementById('if-status').value, currency: document.getElementById('if-currency').value || s.settings.currency || 'EUR', vatTreatment: document.getElementById('if-vt').value, introText: document.getElementById('if-intro').value, paymentTermsText: document.getElementById('if-payterms').value, taxNoteText: document.getElementById('if-taxnote').value, closingText: document.getElementById('if-closing').value, internalNote: document.getElementById('if-note').value, lineItems: collectInvoiceLines(), recipientSnapshot: cp ? { customerName: cp.name || '', addressLine1: cp.address || '', addressLine2: cp.address2 || '', zip: cp.zip || '', city: cp.city || '', country: cp.country || '', vatId: cp.vatNumber || '', contactPerson: document.getElementById('if-contact').value || cp.contactPerson || '', } : undefined, reverseCharge: document.getElementById('if-vt').value === 'eu_b2b_rc_income', vatExempt: document.getElementById('if-vt').value === 'vat_exempt', updatedAt: now() }, type); }
+function draftInvoiceFromForm(id, type) { const s = State.get(); const cp = getCounterpartyById(document.getElementById('if-cp').value || ''); return normalizeInvoice({ id: id || uid(), number: document.getElementById('if-num').value, invoiceNumber: document.getElementById('if-num').value, deferNumber: type==='issued' && !id && !document.getElementById('if-num').value, counterpartyId: document.getElementById('if-cp').value, issueDate: document.getElementById('if-issue').value, dueDate: document.getElementById('if-due').value, servicePeriodFrom: document.getElementById('if-spf').value, servicePeriodTo: document.getElementById('if-spt').value, contactPerson: document.getElementById('if-contact').value, status: document.getElementById('if-status').value, currency: document.getElementById('if-currency').value || s.settings.currency || 'EUR', vatTreatment: document.getElementById('if-vt').value, introText: document.getElementById('if-intro').value, paymentTermsText: document.getElementById('if-payterms').value, taxNoteText: document.getElementById('if-taxnote').value, closingText: document.getElementById('if-closing').value, internalNote: document.getElementById('if-note').value, lineItems: collectInvoiceLines(), recipientSnapshot: cp ? { customerName: cp.name || '', addressLine1: cp.address || '', addressLine2: cp.address2 || '', zip: cp.zip || '', city: cp.city || '', country: cp.country || '', vatId: cp.vatNumber || '', contactPerson: document.getElementById('if-contact').value || cp.contactPerson || '', } : undefined, reverseCharge: document.getElementById('if-vt').value === 'eu_b2b_rc_income', vatExempt: document.getElementById('if-vt').value === 'vat_exempt', updatedAt: now() }, type); }
+function applyInvoiceDraft(inv) {
+  const values={ 'if-num':inv.number, 'if-cp':inv.counterpartyId, 'if-issue':inv.issueDate, 'if-due':inv.dueDate, 'if-spf':inv.servicePeriodFrom, 'if-spt':inv.servicePeriodTo, 'if-contact':inv.contactPerson, 'if-status':inv.status, 'if-currency':inv.currency, 'if-vt':inv.vatTreatment, 'if-intro':inv.introText, 'if-payterms':inv.paymentTermsText, 'if-taxnote':inv.taxNoteText, 'if-closing':inv.closingText, 'if-note':inv.internalNote };
+  Object.entries(values).forEach(([id,value])=>{const el=document.getElementById(id);if(el&&value!=null)el.value=value;});
+  const editor=document.getElementById('invoice-lines-editor'); if(editor){editor.innerHTML=renderLineItemsEditor(inv.lineItems);bindInvoiceEditorEvents();} updateInvoiceTotalsPreview();
+}
 function updateInvoiceTotalsPreview() { const box = document.getElementById('invoice-totals-preview'); if (!box) return; const inv = draftInvoiceFromForm(null, window._invoiceTab || 'issued'); box.innerHTML = `<strong>Summen:</strong> Netto ${fmtMoney(inv.subtotalNet)} · USt. ${fmtMoney(inv.totalVat)} · Gesamt ${fmtMoney(inv.totalGross)} <span class="muted">· ${esc(invoiceTaxLabel(inv))}</span>`; }
 function syncTaxNoteSuggestion() { const vatTreatment = document.getElementById('if-vt')?.value; const field = document.getElementById('if-taxnote'); const cfg = State.get().settings.invoice || defaultInvoiceSettings(); if (!field) return; if (vatTreatment === 'eu_b2b_rc_income' && (!field.value || field.dataset.auto === 'true')) { field.value = cfg.standardReverseChargeNote || ''; field.dataset.auto = 'true'; } else if (vatTreatment !== 'eu_b2b_rc_income' && (!field.value || field.dataset.auto === 'true')) { field.value = cfg.standardVatNote || ''; field.dataset.auto = 'true'; } }
 window.addInvoiceLine = function() { const c=document.getElementById('invoice-lines-editor'); const lines=collectInvoiceLines(); lines.push({ id: uid(), positionNumber: lines.length + 1, description: '', quantity: 1, unit: (State.get().settings.invoice||defaultInvoiceSettings()).defaultUnit || 'h', unitPrice: 0, vatRate: 0 }); c.innerHTML = renderLineItemsEditor(lines); bindInvoiceEditorEvents(); updateInvoiceTotalsPreview(); };
 window.removeInvoiceLine = function(idx) { const c=document.getElementById('invoice-lines-editor'); const lines=collectInvoiceLines(); lines.splice(idx,1); c.innerHTML = renderLineItemsEditor(lines.length ? lines : null); bindInvoiceEditorEvents(); updateInvoiceTotalsPreview(); };
 window.previewInvoiceDraft = function(id, type) { const inv = draftInvoiceFromForm(id, type); const errors = Validate.invoice(inv); if (errors.length) { showToast(errors[0], 'error'); return; } openModal(`Rechnung ${inv.number} – Vorschau`, generateInvoiceDocument(inv), `<button class="btn btn-ghost btn-sm" onclick="closeModal()">Schließen</button>`, 'wide'); };
-window.saveInvoice = function(id, type) { const inv = draftInvoiceFromForm(id, type); const errors = Validate.invoice(inv); if (errors.length) { showToast(errors[0], 'error'); return; } State.set(s=>{ const arr = type==='issued' ? s.invoicesIssued : s.invoicesReceived; const idx = arr.findIndex(i=>i.id===id); const prev = idx >= 0 ? arr[idx] : null; inv.createdAt = prev?.createdAt || inv.createdAt || now(); inv.updatedAt = now(); inv.documentMeta.updatedAt = now(); if (idx>=0) arr[idx]=inv; else arr.push(inv); if (type === 'issued') { if (idx < 0 && s.settings.invoice) s.settings.invoice.nextNumber = (s.settings.invoice.nextNumber || 1) + 1; const txData = { id: prev?.linkedTransactionId || inv.linkedTransactionId || uid(), date: inv.issueDate, type: 'income', category: 'Softwareentwicklung', description: (inv.lineItems[0]?.description || `Rechnung ${inv.number}`).slice(0, 200), counterpartyId: inv.counterpartyId, netAmount: inv.subtotalNet, vatRate: inv.subtotalNet ? (inv.totalVat / inv.subtotalNet) : 0, vatAmount: inv.totalVat, grossAmount: inv.totalGross, vatTreatment: inv.vatTreatment, paymentStatus: inv.status === 'paid' ? 'paid' : 'unpaid', invoiceRef: inv.number, createdAt: prev?.createdAt || now(), updatedAt: now(), deductible: true, currency: inv.currency || 'EUR' }; const txIdx = s.transactions.findIndex(t => t.id === txData.id || t.invoiceRef === inv.number); if (txIdx >= 0) s.transactions[txIdx] = { ...s.transactions[txIdx], ...txData }; else s.transactions.push(txData); inv.linkedTransactionId = txData.id; if (idx>=0) arr[idx]=inv; else arr[arr.length-1]=inv; } }); closeModal(); showToast('Rechnung gespeichert','success'); UI.render('invoices'); };
-window.markInvoicePaid = function(id, type) { State.set(s=>{ const arr = type==='issued' ? s.invoicesIssued : s.invoicesReceived; const inv = arr.find(i=>i.id===id); if(inv) { inv.status='paid'; inv.updatedAt = now(); if (type==='issued' && inv.linkedTransactionId) { const tx = s.transactions.find(t=>t.id===inv.linkedTransactionId || t.invoiceRef===inv.number); if (tx) tx.paymentStatus = 'paid'; } } }); showToast('Rechnung als bezahlt markiert','success'); UI.render('invoices'); };
-window.deleteInvoice = function(id, type) { confirm('Rechnung löschen?', ()=>{ State.set(s=>{ const arr = type==='issued' ? s.invoicesIssued : s.invoicesReceived; const inv = arr.find(i=>i.id===id); if (type==='issued' && inv?.linkedTransactionId) s.transactions = s.transactions.filter(t=>t.id!==inv.linkedTransactionId); if(type==='issued') s.invoicesIssued=s.invoicesIssued.filter(i=>i.id!==id); else s.invoicesReceived=s.invoicesReceived.filter(i=>i.id!==id); }); showToast('Rechnung gelöscht','warn'); UI.render('invoices'); }); };
+window.saveInvoice = async function(id, type) {
+  const button = document.querySelector('.modal-footer .btn-primary'); if (button?.disabled) return; if (button) button.disabled=true;
+  const inv = draftInvoiceFromForm(id, type);
+  if (id) {
+    const current = (type === 'issued' ? State.get().invoicesIssued : State.get().invoicesReceived).find(item => item.id === id);
+    inv.version = current?.version ?? null;
+  }
+  const errors = Validate.invoice(inv);
+  if (errors.length) { showToast(errors[0], 'error'); if(button)button.disabled=false; return; }
+  Drafts.setStatus('invoice-save-status','saving','Speichert …');
+  try {
+    let saved;
+    if(type==='issued') { const result=await Persistence.saveIssuedInvoice(inv); saved={...normalizeInvoice(result.invoice, 'issued'), linkedTransactionId:result.transactionId}; }
+    else saved=await Persistence.saveEntity('invoicesReceived', inv);
+    State.set(s=>{const arr=type==='issued'?s.invoicesIssued:s.invoicesReceived;const i=arr.findIndex(x=>x.id===saved.id);if(i>=0)arr[i]=saved;else arr.push(saved);});
+    Drafts.cancel(`invoice-${type}`,id||'new'); await Drafts.remove(`invoice-${type}`,id||'new');
+    closeModal();showToast('Rechnung zentral gespeichert','success');UI.render('invoices');
+  } catch(error) { Drafts.setStatus('invoice-save-status',error.code==='VERSION_CONFLICT'?'conflict':'error',error.code==='VERSION_CONFLICT'?'Neuere Version vorhanden – Eingaben wurden lokal behalten.':`Speichern fehlgeschlagen: ${error.message}`);if(button)button.disabled=false; }
+};
+window.markInvoicePaid = async function(id, type) { const arr=type==='issued'?State.get().invoicesIssued:State.get().invoicesReceived; const inv=arr.find(i=>i.id===id); if(!inv)return; try { const changed={...inv,status:'paid',updatedAt:now()}; let saved; if(type==='issued') saved=(await Persistence.saveIssuedInvoice(changed)).invoice; else saved=await Persistence.saveEntity('invoicesReceived',changed); State.set(s=>{const list=type==='issued'?s.invoicesIssued:s.invoicesReceived;const i=list.findIndex(x=>x.id===id);list[i]=saved;}); showToast('Rechnung als bezahlt markiert','success');UI.render('invoices'); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); } };
+window.deleteInvoice = function(_id, _type) { showToast('Rechnungen werden aus Gründen der Nachvollziehbarkeit nicht gelöscht. Bitte stornieren.', 'warn'); };
 
 // ── ANLAGEVERMÖGEN ─────────────────────────────────────────
 Pages.assets = function() {
@@ -600,7 +660,7 @@ function openAssetModal(id) {
      <button class="btn btn-primary btn-sm" onclick="saveAsset(${id?`'${id}'`:'null'})">Speichern</button>`);
 }
 window.openAssetModal = openAssetModal;
-window.saveAsset = function(id) {
+window.saveAsset = async function(id) {
   const a = {
     id: id||uid(), name: document.getElementById('a-name').value,
     purchaseDate: document.getElementById('a-date').value,
@@ -612,14 +672,12 @@ window.saveAsset = function(id) {
   };
   const errors = Validate.asset(a);
   if (errors.length) { showToast(errors[0], 'error'); return; }
-  State.set(s=>{
-    const idx=s.assets.findIndex(x=>x.id===id);
-    if(idx>=0){a.createdAt=s.assets[idx].createdAt;s.assets[idx]=a;}else s.assets.push(a);
-  });
-  closeModal(); showToast('Wirtschaftsgut gespeichert','success'); UI.render('assets');
+  const existing = id ? State.get().assets.find(x => x.id === id) : null;
+  if (existing) Object.assign(a, { version: existing.version, createdAt: existing.createdAt });
+  try { const saved=await Persistence.saveEntity('assets', a); State.set(s=>{const i=s.assets.findIndex(x=>x.id===saved.id);if(i>=0)s.assets[i]=saved;else s.assets.push(saved);}); closeModal(); showToast('Wirtschaftsgut zentral gespeichert','success'); UI.render('assets'); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); }
 };
 window.deleteAsset = function(id) {
-  confirm('Wirtschaftsgut löschen?',()=>{ State.set(s=>{s.assets=s.assets.filter(a=>a.id!==id);}); showToast('Gelöscht','warn'); UI.render('assets'); });
+  confirm('Wirtschaftsgut löschen?',async ()=>{ try { const entity=State.get().assets.find(a=>a.id===id); await Persistence.deleteEntity('assets',entity); State.set(s=>{s.assets=s.assets.filter(a=>a.id!==id);}); showToast('Gelöscht','warn'); UI.render('assets'); } catch(error) { showToast(`Löschen fehlgeschlagen: ${error.message}`,'error'); } });
 };
 
 // ── DIVIDENDEN ─────────────────────────────────────────────
@@ -685,23 +743,23 @@ window.calcDividend = function() {
   const wht = Math.round(gross * whtPct/100 * 100)/100;
   const netEl = document.getElementById('d-net'); if(netEl) netEl.value=(gross-wht).toFixed(2);
 };
-window.saveDividend = function() {
+window.saveDividend = async function() {
   const gross = parseFloat(document.getElementById('d-gross').value)||0;
   const whtPct = parseFloat(document.getElementById('d-wht').value)||0;
   const whtAmt = Math.round(gross*whtPct/100*100)/100;
   if (!gross||gross<=0) { showToast('Bitte gültigen Betrag eingeben','error'); return; }
-  State.set(s=>s.dividends.push({
+  const dividend = {
     id: uid(), profitYear: parseInt(document.getElementById('d-yr').value),
     resolutionDate: document.getElementById('d-res').value,
     paymentDate: document.getElementById('d-pay').value,
     grossDividend: gross, whtRate: whtPct/100, whtAmount: whtAmt,
     netPayout: gross-whtAmt, shareholderNote: document.getElementById('d-note').value,
     createdAt: now(), updatedAt: now(),
-  }));
-  closeModal(); showToast('Dividende gespeichert','success'); UI.render('dividends');
+  };
+  try { const saved=await Persistence.saveEntity('dividends', dividend); State.set(s=>s.dividends.push(saved)); closeModal(); showToast('Dividende zentral gespeichert','success'); UI.render('dividends'); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); }
 };
 window.deleteDividend = function(id) {
-  confirm('Dividendeneintrag löschen?',()=>{ State.set(s=>{s.dividends=s.dividends.filter(d=>d.id!==id);}); showToast('Gelöscht','warn'); UI.render('dividends'); });
+  confirm('Dividendeneintrag löschen?',async ()=>{ try { await Persistence.deleteEntity('dividends',State.get().dividends.find(d=>d.id===id)); State.set(s=>{s.dividends=s.dividends.filter(d=>d.id!==id);}); showToast('Gelöscht','warn'); UI.render('dividends'); } catch(error) { showToast(`Löschen fehlgeschlagen: ${error.message}`,'error'); } });
 };
 
 // ── GESCHÄFTSPARTNER ───────────────────────────────────────
@@ -758,7 +816,7 @@ function openCpModal(id=null) {
      <button class="btn btn-primary btn-sm" onclick="saveCp(${id?`'${id}'`:'null'})">Speichern</button>`);
 }
 window.openCpModal = openCpModal;
-window.saveCp = function(id=null) {
+window.saveCp = async function(id=null) {
   const name = document.getElementById('cp-name').value.trim();
   if (!name) { showToast('Name ist erforderlich','error'); return; }
   const payload = {
@@ -779,19 +837,12 @@ window.saveCp = function(id=null) {
     updatedAt: now(),
     createdAt: id ? undefined : now(),
   };
-  State.set(s=>{
-    const idx = s.counterparties.findIndex(c=>c.id===id);
-    if (idx >= 0) {
-      payload.createdAt = s.counterparties[idx].createdAt || now();
-      s.counterparties[idx] = { ...s.counterparties[idx], ...payload };
-    } else {
-      s.counterparties.push(payload);
-    }
-  });
-  closeModal(); showToast('Partner gespeichert','success'); UI.render('counterparties');
+  const existing= id ? State.get().counterparties.find(c=>c.id===id) : null;
+  if(existing) Object.assign(payload,{version:existing.version,createdAt:existing.createdAt});
+  try { const saved=await Persistence.saveEntity('counterparties',payload); State.set(s=>{const i=s.counterparties.findIndex(c=>c.id===saved.id);if(i>=0)s.counterparties[i]=saved;else s.counterparties.push(saved);}); closeModal(); showToast('Partner zentral gespeichert','success'); UI.render('counterparties'); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); }
 };
 window.deleteCp = function(id) {
-  confirm('Geschäftspartner löschen?',()=>{ State.set(s=>{s.counterparties=s.counterparties.filter(c=>c.id!==id);}); showToast('Gelöscht','warn'); UI.render('counterparties'); });
+  confirm('Geschäftspartner löschen?',async ()=>{ try { await Persistence.deleteEntity('counterparties',State.get().counterparties.find(c=>c.id===id)); State.set(s=>{s.counterparties=s.counterparties.filter(c=>c.id!==id);}); showToast('Gelöscht','warn'); UI.render('counterparties'); } catch(error) { showToast(`Löschen fehlgeschlagen: ${error.message}`,'error'); } });
 };
 
 // ── STEUERN ────────────────────────────────────────────────
@@ -1000,7 +1051,7 @@ Pages.settings = function() {
     </div>`;
 };
 
-window.saveCompany = function() {
+window.saveCompany = async function() {
   State.set(s=>{
     s.company.name = document.getElementById('s-name').value;
     s.company.ico = document.getElementById('s-ico').value;
@@ -1016,17 +1067,16 @@ window.saveCompany = function() {
   const logoFile = document.getElementById('s-logo')?.files?.[0];
   if (logoFile) {
     const reader = new FileReader();
-    reader.onload = ev => {
+    reader.onload = async ev => {
       State.set(st => { st.company.logoDataUrl = ev.target.result; });
-      showToast('Profil inklusive Logo gespeichert','success');
-      UI.render('settings');
+      try { await Persistence.saveSettings(State.get()); showToast('Profil inklusive Logo zentral gespeichert','success'); UI.render('settings'); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); }
     };
     reader.readAsDataURL(logoFile);
   } else {
-    showToast('Profil gespeichert','success');
+    try { await Persistence.saveSettings(State.get()); showToast('Profil zentral gespeichert','success'); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); }
   }
 };
-window.saveSettings = function() {
+window.saveSettings = async function() {
   State.set(s=>{
     s.settings.accountingYear = parseInt(document.getElementById('s-yr').value);
     s.company.isVatRegistered = document.getElementById('s-vatreg').value==='true';
@@ -1053,7 +1103,7 @@ window.saveSettings = function() {
       signatureName: document.getElementById('s-inv-sign').value,
     };
   });
-  showToast('Einstellungen gespeichert','success'); UI.render(UI.currentTab);
+  try { await Persistence.saveSettings(State.get()); showToast('Einstellungen zentral gespeichert','success'); UI.render(UI.currentTab); } catch(error) { showToast(`Speichern fehlgeschlagen: ${error.message}`,'error'); }
 };
 window.resetApp = function() {
   confirm('Wirklich alle Daten zurücksetzen? Diese Aktion ist unwiderruflich!', ()=>{
@@ -1133,11 +1183,11 @@ const UI = (() => {
 
   function exportJSON() { State.exportJSON(); showToast('JSON exportiert','success'); }
   function importJSON() { document.getElementById('file-input').click(); }
-  function changeYear(year) {
+  async function changeYear(year) {
     State.set(s => { s.settings.accountingYear = parseInt(year, 10); });
+    try { await Persistence.saveSettings(State.get()); } catch(error) { showToast(`Geschäftsjahr konnte nicht gespeichert werden: ${error.message}`, 'error'); }
     render(_tab);
   }
 
   return { render, exportJSON, importJSON, changeYear, get currentTab() { return _tab; } };
 })();
-

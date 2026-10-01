@@ -40,16 +40,16 @@ const State = (() => {
   }
 
   let _state = null;
+  let _authContext = { userId: null, companyId: null };
 
   function load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(raw, jsonSafeReviver);
         _state = migrate(parsed);
       } else {
         _state = empty();
-        seedDemo();
       }
     } catch(e) {
       console.error('Fehler beim Laden des Zustands', e);
@@ -93,7 +93,18 @@ const State = (() => {
   function save() {
     if (!_state) return;
     _state.appMeta.updatedAt = now();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(_state));
+    if (_authContext.userId) return;
+    // Kept only as a recoverable legacy source for the guided migration.
+    // Cloud sessions never call this as their source of truth.
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(_state, jsonSafeReplacer));
+  }
+
+  function jsonSafeReplacer(_key, value) {
+    return value === Infinity ? '__BE_INFINITY__' : value;
+  }
+
+  function jsonSafeReviver(_key, value) {
+    return value === '__BE_INFINITY__' ? Infinity : value;
   }
 
   function get() { return _state; }
@@ -107,13 +118,13 @@ const State = (() => {
   function reset() { _state = empty(); save(); }
 
   function exportJSON() {
-    const blob = new Blob([JSON.stringify({ ..._state, exportedAt: now() }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ ..._state, exportedAt: now() }, jsonSafeReplacer, 2)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
     a.download = `becoding-buchhaltung-${dateStr()}.json`; a.click();
   }
 
   function importJSON(data) {
-    const parsed = JSON.parse(data);
+    const parsed = JSON.parse(data, jsonSafeReviver);
     if (!parsed.schemaVersion) throw new Error('Ungültiges JSON-Format');
     _state = migrate(parsed);
     save();
@@ -153,6 +164,16 @@ const State = (() => {
     save();
   }
 
-  return { load, get, set, save, reset, exportJSON, importJSON };
+  function replace(next) { _state = migrate(next); }
+  function setAuthContext(userId, companyId) { _authContext = { userId, companyId }; }
+  function authContext() { return { ..._authContext }; }
+  function cloudState(data) {
+    const base = empty();
+    return migrate({ ...base, ...data, appMeta: { createdAt: data.appMeta?.createdAt || now(), updatedAt: now() } });
+  }
+  function legacySnapshot() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? migrate(JSON.parse(raw, jsonSafeReviver)) : null;
+  }
+  return { load, get, set, save, reset, exportJSON, importJSON, replace, cloudState, setAuthContext, authContext, legacySnapshot };
 })();
-
